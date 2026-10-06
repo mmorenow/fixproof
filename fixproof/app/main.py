@@ -13,7 +13,7 @@ import uuid
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from . import config, db
+from . import config, db, verdict
 from .runner import run_replay
 
 app = FastAPI(title="FixProof", version="0.0.1")
@@ -63,6 +63,52 @@ def replays_run(req: ReplayRequest) -> dict:
             )
 
     return {"batch_id": batch_id, "template": req.template, "results": results}
+
+
+class TriageRequest(BaseModel):
+    product: str = "httpd"
+    # the incoming report's PoC
+    new_template: str
+    # the earlier report we compare against, and its fix boundary
+    candidate_template: str
+    candidate_pre_fix: str   # last version before the candidate's fix (control)
+    candidate_fixed_in: str  # first version with the candidate's fix
+
+
+@app.post("/triage")
+def triage(req: TriageRequest) -> dict:
+    """Decide whether the new report is a duplicate of the candidate by running
+    the new PoC before and after the candidate's fix."""
+    template_path = config.REPLAYS_DIR / f"{req.new_template}.yaml"
+    if not template_path.exists():
+        raise HTTPException(404, f"template not found: {req.new_template}")
+
+    pre = run_replay(req.product, req.candidate_pre_fix, template_path)
+    post = run_replay(req.product, req.candidate_fixed_in, template_path)
+    v = verdict.decide(pre, post)
+
+    evidence = {
+        "pre_fix": {"version": req.candidate_pre_fix, "outcome": pre.outcome, "matched": pre.matched},
+        "post_fix": {"version": req.candidate_fixed_in, "outcome": post.outcome, "matched": post.matched},
+    }
+    with db.connect() as conn:
+        db.record_verdict(
+            conn,
+            product=req.product,
+            new_template=req.new_template,
+            candidate_template=req.candidate_template,
+            candidate_fixed_in=req.candidate_fixed_in,
+            label=v.label,
+            evidence=evidence,
+        )
+
+    return {
+        "verdict": v.label,
+        "reason": v.reason,
+        "new_report": req.new_template,
+        "candidate": req.candidate_template,
+        "evidence": evidence,
+    }
 
 
 @app.get("/replays/{batch_id}")

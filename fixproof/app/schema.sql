@@ -37,3 +37,15 @@ CREATE TABLE IF NOT EXISTS replay_runs (
 );
 
 CREATE INDEX IF NOT EXISTS replay_runs_batch_idx ON replay_runs (batch_id);
+
+-- One row per triage decision: did the candidate's fix cover the new report?
+CREATE TABLE IF NOT EXISTS verdicts (
+    id               BIGSERIAL PRIMARY KEY,
+    product          TEXT NOT NULL,
+    new_template     TEXT NOT NULL,       -- the incoming report's PoC
+    candidate_template TEXT,              -- the earlier report we compare against
+    candidate_fixed_in TEXT,             -- version where the candidate was fixed
+    label            TEXT NOT NULL,       -- DUPLICATE | BYPASS | NOT_REPRODUCED | ABSTAIN
+    evidence         JSONB,               -- the pre-fix and post-fix runs
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);

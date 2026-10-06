@@ -44,6 +44,28 @@ def record_run(
     return row[0]
 
 
+def record_verdict(
+    conn: psycopg.Connection,
+    *,
+    product: str,
+    new_template: str,
+    candidate_template: str,
+    candidate_fixed_in: str,
+    label: str,
+    evidence: dict,
+) -> int:
+    row = conn.execute(
+        """
+        INSERT INTO verdicts
+            (product, new_template, candidate_template, candidate_fixed_in, label, evidence)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (product, new_template, candidate_template, candidate_fixed_in, label, Jsonb(evidence)),
+    ).fetchone()
+    return row[0]
+
+
 def fetch_batch(conn: psycopg.Connection, batch_id: str) -> list[dict]:
     rows = conn.execute(
         """
