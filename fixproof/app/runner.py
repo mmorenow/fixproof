@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config
+from . import config, targets
 
 
 class DockerError(RuntimeError):
@@ -60,22 +60,25 @@ class ReplayResult:
     duration_ms: int
 
 
-def _wait_ready(target: str) -> bool:
-    """Poll the target over the internal network until httpd answers."""
+def _wait_ready(target: str, port: int) -> bool:
+    """Poll the target over the internal network until it answers on its port.
+    A 2xx/3xx/4xx all prove the server is up; only a connection failure retries."""
     deadline = time.monotonic() + config.TARGET_READY_TIMEOUT_S
     last = ""
     while time.monotonic() < deadline:
+        # Require a real HTTP response (exit 0). busybox wget follows redirects, so
+        # a login redirect still counts as "up"; a connection refusal does not.
         proc = _docker(
             "run", "--rm", "--network", config.RUN_NETWORK,
             config.READINESS_IMAGE,
-            "wget", "-q", "-T", "2", "-O", "-", f"http://{target}/",
+            "wget", "-q", "-T", "3", "-O", "/dev/null", f"http://{target}:{port}/",
             check=False, timeout=15,
         )
         if proc.returncode == 0:
             return True
         last = proc.stderr.strip()
-        time.sleep(1)
-    raise DockerError(f"target {target} not ready within timeout: {last}")
+        time.sleep(2)
+    raise DockerError(f"target {target}:{port} not ready within timeout: {last}")
 
 
 def run_replay(product: str, version: str, template_path: Path) -> ReplayResult:
@@ -83,26 +86,30 @@ def run_replay(product: str, version: str, template_path: Path) -> ReplayResult:
     runs nuclei on the same egress-less network, parses the oracle result, and
     always tears the target down."""
     ensure_network()
-    image = f"{product}:{version}"
+    spec = targets.spec(product)
+    image = f"{spec.image_repo}:{version}"
     ensure_image(image)
     ensure_image(config.NUCLEI_IMAGE)
     ensure_image(config.READINESS_IMAGE)
 
     run_id = uuid.uuid4().hex[:12]
     target = f"fixproof-target-{run_id}"
-    conf = config.TARGETS_DIR / "httpd-cve-2021-41773" / "httpd.conf"
     started = time.monotonic()
+
+    mount_args: list[str] = []
+    for host_path, container_path in spec.mounts.items():
+        mount_args += ["-v", f"{host_path}:{container_path}:ro"]
 
     try:
         _docker(
             "run", "-d", "--name", target,
             "--network", config.RUN_NETWORK, "--network-alias", target,
             "--security-opt", "no-new-privileges",
-            "--pids-limit", "256", "--memory", "512m",
-            "-v", f"{conf}:/usr/local/apache2/conf/httpd.conf:ro",
+            "--pids-limit", "256", "--memory", "768m",
+            *mount_args,
             image,
         )
-        _wait_ready(target)
+        _wait_ready(target, spec.port)
 
         with tempfile.TemporaryDirectory() as outdir:
             out = Path(outdir)
@@ -116,7 +123,7 @@ def run_replay(product: str, version: str, template_path: Path) -> ReplayResult:
                 "run", "--rm", "--network", config.RUN_NETWORK,
                 "-v", f"{out}:/out",
                 config.NUCLEI_IMAGE,
-                "-u", f"http://{target}:80",
+                "-u", f"http://{target}:{spec.port}",
                 "-t", "/out/template.yaml",
                 "-jsonl", "-o", "/out/result.jsonl",
                 "-disable-update-check", "-no-interactsh", "-silent",

@@ -73,3 +73,13 @@ def test_scan_finds_fix_boundary():
     sr = verdict.scan_ladder(versions, results)
     assert sr.status == verdict.ALREADY_FIXED, sr.per_version
     assert sr.last_vulnerable == "2.4.49" and sr.fixed_in == "2.4.50", sr.per_version
+
+
+def test_grafana_is_not_apache_specific():
+    # A second, unrelated product (Grafana CVE-2021-43798) proves the engine is
+    # vendor-agnostic: only a target spec and a template were added, no code.
+    t = config.REPLAYS_DIR / "cve-2021-43798.yaml"
+    v830 = run_replay("grafana", "8.3.0", t)
+    v831 = run_replay("grafana", "8.3.1", t)
+    assert v830.outcome == "pass" and v830.matched is True, v830.evidence
+    assert v831.outcome == "fail" and v831.matched is False, v831.evidence

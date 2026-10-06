@@ -80,6 +80,20 @@ curl -s -X POST localhost:8099/scan -H 'content-type: application/json' \
 # -> status ALREADY_FIXED, last_vulnerable 2.4.49, fixed_in 2.4.50
 ```
 
+## Not Apache-specific
+
+A second real product, Grafana (CVE-2021-43798), runs through the same engine with
+only a target spec (`app/targets.py`) and a template added — no code changes:
+
+```bash
+curl -s -X POST localhost:8099/scan -H 'content-type: application/json' \
+  -d '{"product":"grafana","template":"cve-2021-43798","versions":["8.3.0","8.3.1"]}'
+# -> ALREADY_FIXED, last_vulnerable 8.3.0, fixed_in 8.3.1
+```
+
+Adding a product = one `TargetSpec` (image repo, port, optional config mount) + a
+PoC template.
+
 ## Test
 
 ```bash

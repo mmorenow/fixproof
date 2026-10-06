@@ -25,5 +25,5 @@ REPLAYS_DIR = ROOT / "replays"
 TARGETS_DIR = ROOT / "targets"
 
 # Per-run limits.
-TARGET_READY_TIMEOUT_S = int(os.environ.get("FIXPROOF_TARGET_READY_TIMEOUT_S", "30"))
+TARGET_READY_TIMEOUT_S = int(os.environ.get("FIXPROOF_TARGET_READY_TIMEOUT_S", "90"))
 NUCLEI_TIMEOUT_S = int(os.environ.get("FIXPROOF_NUCLEI_TIMEOUT_S", "60"))
