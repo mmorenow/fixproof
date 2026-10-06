@@ -1,0 +1,21 @@
+# Phase 0 only runs PostgreSQL here. The app runs on the host (uv run), and it
+# starts target + nuclei containers itself on the isolated `fixproof-run` network.
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: fixproof
+      POSTGRES_PASSWORD: fixproof
+      POSTGRES_DB: fixproof
+    ports:
+      - "55432:5432"
+    volumes:
+      - fixproof-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fixproof"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  fixproof-db:
