@@ -69,8 +69,19 @@ curl -s -X POST localhost:8099/search -H 'content-type: application/json' \
 ```
 
 The two traversal CVEs (41773, 42013) score ~1.8; the SSRF, request-smuggling and
-NULL-deref CVEs score ~0.15. The full loop: search proposes CVE-2021-41773 for an
-incoming traversal report, then `/triage` runs the fix-differential against it.
+NULL-deref CVEs score ~0.15.
+
+### The full loop in one call
+
+`/triage/auto` takes an incoming report (prose + its PoC), lets search pick the
+candidate, then runs the fix-differential against it:
+
+```bash
+curl -s -X POST localhost:8099/triage/auto -H 'content-type: application/json' -d '{
+  "text":"Apache path traversal: double-encoded ../ reads /etc/passwd outside the web root",
+  "new_template":"cve-2021-42013"}'
+# -> chosen_candidate CVE-2021-41773 (score ~1.84), verdict BYPASS
+```
 
 ## Scan a version ladder ("is it already fixed?")
 

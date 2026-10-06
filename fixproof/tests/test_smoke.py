@@ -83,3 +83,25 @@ def test_grafana_is_not_apache_specific():
     v831 = run_replay("grafana", "8.3.1", t)
     assert v830.outcome == "pass" and v830.matched is True, v830.evidence
     assert v831.outcome == "fail" and v831.matched is False, v831.evidence
+
+
+def test_auto_loop_search_then_execute():
+    # Offline: seed the candidate report, let search pick it, then let execution
+    # decide. An incoming double-encoded-traversal report should resolve to
+    # CVE-2021-41773 and be judged a BYPASS (not a duplicate).
+    from app import catalog
+    with db.connect() as conn:
+        conn.execute("DELETE FROM reports WHERE external_id = 'CVE-2021-41773'")
+        conn.execute(
+            "INSERT INTO reports (source, external_id, product, text) VALUES "
+            "('test','CVE-2021-41773','httpd','Apache path traversal: an encoded ../ maps URLs to files outside the document root, reading /etc/passwd')"
+        )
+        ranked = search.candidates(conn, "Apache path traversal bypass with double-encoded dot segments reading /etc/passwd outside the web root", limit=5)
+
+    chosen = next((c for c in ranked if catalog.get(c["external_id"])), None)
+    assert chosen and chosen["external_id"] == "CVE-2021-41773", ranked
+    run = catalog.get(chosen["external_id"])
+
+    pre = run_replay(run.product, run.pre_fix, T42013)
+    post = run_replay(run.product, run.fixed_in, T42013)
+    assert verdict.decide(pre, post).label == verdict.BYPASS, (pre.evidence, post.evidence)

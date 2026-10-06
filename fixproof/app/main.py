@@ -13,7 +13,7 @@ import uuid
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from . import config, db, ingest, search, verdict
+from . import catalog, config, db, ingest, search, verdict
 from .runner import run_replay
 
 app = FastAPI(title="FixProof", version="0.0.1")
@@ -169,6 +169,59 @@ def scan(req: ScanRequest) -> dict:
         "last_vulnerable": sr.last_vulnerable,
         "fixed_in": sr.fixed_in,
         "per_version": sr.per_version,
+    }
+
+
+class AutoTriageRequest(BaseModel):
+    # the incoming report
+    text: str                 # the report prose, used to search for candidates
+    new_template: str         # the incoming report's replayable PoC
+    product: str | None = None  # if omitted, taken from the chosen candidate
+
+
+@app.post("/triage/auto")
+def triage_auto(req: AutoTriageRequest) -> dict:
+    """The full loop: search proposes a candidate from the report text, then the
+    engine runs the incoming PoC before and after that candidate's fix to decide."""
+    template_path = config.REPLAYS_DIR / f"{req.new_template}.yaml"
+    if not template_path.exists():
+        raise HTTPException(404, f"template not found: {req.new_template}")
+
+    with db.connect() as conn:
+        ranked = search.candidates(conn, req.text, limit=5)
+
+    # Pick the top-ranked candidate we can actually replay against.
+    chosen = next((c for c in ranked if catalog.get(c["external_id"])), None)
+    if chosen is None:
+        return {"verdict": verdict.ABSTAIN,
+                "reason": "no runnable candidate among the search results",
+                "candidates": ranked}
+
+    run = catalog.get(chosen["external_id"])
+    product = req.product or run.product
+    pre = run_replay(product, run.pre_fix, template_path)
+    post = run_replay(product, run.fixed_in, template_path)
+    v = verdict.decide(pre, post)
+
+    evidence = {
+        "pre_fix": {"version": run.pre_fix, "outcome": pre.outcome, "matched": pre.matched},
+        "post_fix": {"version": run.fixed_in, "outcome": post.outcome, "matched": post.matched},
+    }
+    with db.connect() as conn:
+        db.record_verdict(
+            conn, product=product, new_template=req.new_template,
+            candidate_template=run.template, candidate_fixed_in=run.fixed_in,
+            label=v.label, evidence=evidence,
+        )
+
+    return {
+        "verdict": v.label,
+        "reason": v.reason,
+        "chosen_candidate": chosen["external_id"],
+        "candidate_score": chosen["score"],
+        "new_report": req.new_template,
+        "evidence": evidence,
+        "all_candidates": [c["external_id"] for c in ranked],
     }
 
 
