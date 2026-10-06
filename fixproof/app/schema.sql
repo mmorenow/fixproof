@@ -2,6 +2,24 @@
 -- Only the tables the execution core writes to in Phase 0.
 
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Incoming and historical reports. In Phase 1 these are real public CVE
+-- descriptions pulled from OSV; later they are hunter-written reports. The
+-- candidate proposer (app/search.py) ranks over this table. `search` is a
+-- generated full-text column; a trigram index handles fuzzy lexical overlap.
+CREATE TABLE IF NOT EXISTS reports (
+    id           BIGSERIAL PRIMARY KEY,
+    source       TEXT NOT NULL,            -- osv | manual | ...
+    external_id  TEXT UNIQUE,              -- e.g. CVE-2021-41773
+    product      TEXT,
+    text         TEXT NOT NULL,
+    published_at TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    search       tsvector GENERATED ALWAYS AS (to_tsvector('english', text)) STORED
+);
+CREATE INDEX IF NOT EXISTS reports_search_idx ON reports USING gin (search);
+CREATE INDEX IF NOT EXISTS reports_trgm_idx ON reports USING gin (text gin_trgm_ops);
 
 CREATE TABLE IF NOT EXISTS replay_artifacts (
     id          BIGSERIAL PRIMARY KEY,

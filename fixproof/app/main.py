@@ -13,7 +13,7 @@ import uuid
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from . import config, db, verdict
+from . import config, db, ingest, search, verdict
 from .runner import run_replay
 
 app = FastAPI(title="FixProof", version="0.0.1")
@@ -65,6 +65,41 @@ def replays_run(req: ReplayRequest) -> dict:
     return {"batch_id": batch_id, "template": req.template, "results": results}
 
 
+DEFAULT_CVES = [
+    "CVE-2021-41773",  # httpd path traversal (our original)
+    "CVE-2021-42013",  # httpd traversal bypass of the 2.4.50 fix
+    "CVE-2021-40438",  # mod_proxy SSRF
+    "CVE-2021-44790",  # mod_lua buffer overflow
+    "CVE-2022-22720",  # HTTP request smuggling
+    "CVE-2021-34798",  # NULL pointer dereference
+]
+
+
+class IngestRequest(BaseModel):
+    cve_ids: list[str] = Field(default_factory=lambda: DEFAULT_CVES)
+
+
+@app.post("/reports/ingest")
+def reports_ingest(req: IngestRequest) -> dict:
+    stored = ingest.ingest_cves(req.cve_ids)
+    return {"stored": stored, "count": len(stored)}
+
+
+class SearchRequest(BaseModel):
+    text: str
+    limit: int = 5
+    exclude_external_id: str | None = None
+
+
+@app.post("/search")
+def search_candidates(req: SearchRequest) -> dict:
+    with db.connect() as conn:
+        results = search.candidates(
+            conn, req.text, limit=req.limit, exclude_external_id=req.exclude_external_id
+        )
+    return {"query": req.text[:120], "candidates": results}
+
+
 class TriageRequest(BaseModel):
     product: str = "httpd"
     # the incoming report's PoC
@@ -108,6 +143,32 @@ def triage(req: TriageRequest) -> dict:
         "new_report": req.new_template,
         "candidate": req.candidate_template,
         "evidence": evidence,
+    }
+
+
+class ScanRequest(BaseModel):
+    product: str = "httpd"
+    template: str
+    # versions, oldest -> newest
+    versions: list[str] = Field(default_factory=lambda: ["2.4.49", "2.4.50", "2.4.51"])
+
+
+@app.post("/scan")
+def scan(req: ScanRequest) -> dict:
+    """Run one PoC across a version ladder and report the fix boundary and whether
+    the bug still reproduces on the newest version (the 'already fixed?' answer)."""
+    template_path = config.REPLAYS_DIR / f"{req.template}.yaml"
+    if not template_path.exists():
+        raise HTTPException(404, f"template not found: {req.template}")
+
+    results = [run_replay(req.product, v, template_path) for v in req.versions]
+    sr = verdict.scan_ladder(req.versions, results)
+    return {
+        "template": req.template,
+        "status": sr.status,
+        "last_vulnerable": sr.last_vulnerable,
+        "fixed_in": sr.fixed_in,
+        "per_version": sr.per_version,
     }
 
 

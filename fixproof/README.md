@@ -57,6 +57,29 @@ curl -s -X POST localhost:8099/triage -H 'content-type: application/json' -d '{
 Both reports read the same `/etc/passwd` and look almost identical in text. A
 similarity-based deduper merges them; execution tells them apart.
 
+## Candidate search (propose, don't decide)
+
+Pull real public CVE descriptions from OSV, then rank them against an incoming
+report. Search only narrows the field; execution decides.
+
+```bash
+curl -s -X POST localhost:8099/reports/ingest -d '{}'     # loads 6 real httpd CVEs from OSV
+curl -s -X POST localhost:8099/search -H 'content-type: application/json' \
+  -d '{"text":"path traversal in Apache using encoded ../ to read /etc/passwd"}'
+```
+
+The two traversal CVEs (41773, 42013) score ~1.8; the SSRF, request-smuggling and
+NULL-deref CVEs score ~0.15. The full loop: search proposes CVE-2021-41773 for an
+incoming traversal report, then `/triage` runs the fix-differential against it.
+
+## Scan a version ladder ("is it already fixed?")
+
+```bash
+curl -s -X POST localhost:8099/scan -H 'content-type: application/json' \
+  -d '{"template":"cve-2021-41773","versions":["2.4.49","2.4.50","2.4.51"]}'
+# -> status ALREADY_FIXED, last_vulnerable 2.4.49, fixed_in 2.4.50
+```
+
 ## Test
 
 ```bash

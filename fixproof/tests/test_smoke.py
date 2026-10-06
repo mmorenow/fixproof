@@ -6,11 +6,18 @@ Run with: uv run pytest -s
 """
 from __future__ import annotations
 
-from app import config, verdict
+import pytest
+
+from app import config, db, search, verdict
 from app.runner import run_replay
 
 T41773 = config.REPLAYS_DIR / "cve-2021-41773.yaml"
 T42013 = config.REPLAYS_DIR / "cve-2021-42013.yaml"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _schema():
+    db.init_schema()
 
 
 def test_apache_path_traversal_fix_boundary():
@@ -40,3 +47,29 @@ def test_true_duplicate_is_a_duplicate():
     pre = run_replay("httpd", "2.4.49", T41773)
     post = run_replay("httpd", "2.4.50", T41773)
     assert verdict.decide(pre, post).label == verdict.DUPLICATE, (pre.evidence, post.evidence)
+
+
+def test_search_ranks_related_report_first():
+    # Insert two unrelated reports directly (no network) and confirm the proposer
+    # ranks the traversal one above the SSRF one for a traversal query.
+    with db.connect() as conn:
+        conn.execute("DELETE FROM reports WHERE external_id LIKE 'TEST-%'")
+        conn.execute(
+            "INSERT INTO reports (source, external_id, product, text) VALUES "
+            "('test','TEST-TRAV','httpd','path traversal maps encoded ../ to files outside the document root, reading /etc/passwd'),"
+            "('test','TEST-SSRF','httpd','server side request forgery in mod_proxy lets an attacker forward requests to internal hosts')"
+        )
+        ranked = search.candidates(conn, "directory path traversal reading /etc/passwd via encoded dot dot slash", limit=5)
+        conn.execute("DELETE FROM reports WHERE external_id LIKE 'TEST-%'")
+
+    ids = [c["external_id"] for c in ranked]
+    assert ids and ids[0] == "TEST-TRAV", ranked
+    assert ids.index("TEST-TRAV") < (ids.index("TEST-SSRF") if "TEST-SSRF" in ids else 99)
+
+
+def test_scan_finds_fix_boundary():
+    versions = ["2.4.49", "2.4.50", "2.4.51"]
+    results = [run_replay("httpd", v, T41773) for v in versions]
+    sr = verdict.scan_ladder(versions, results)
+    assert sr.status == verdict.ALREADY_FIXED, sr.per_version
+    assert sr.last_vulnerable == "2.4.49" and sr.fixed_in == "2.4.50", sr.per_version
