@@ -36,12 +36,35 @@ def _docker(*args: str, timeout: int = 120, check: bool = True) -> subprocess.Co
     return proc
 
 
+def _image_present(image: str) -> bool:
+    return _docker("image", "inspect", image, check=False).returncode == 0
+
+
 def ensure_image(image: str) -> None:
     """Pull an image if it is not already local. Pull happens over the host network
     before any container attaches to the internal network."""
-    if _docker("image", "inspect", image, check=False).returncode == 0:
+    if _image_present(image):
         return
     _docker("pull", image, timeout=600)
+
+
+def ensure_target_image(spec: targets.TargetSpec, version: str) -> str:
+    """Return a local image ref for one product version, building it if the product
+    has no official image and pulling it otherwise. Either way the version is the
+    image tag, so the isolated run itself never has to reach a registry. Build and
+    pull both happen here, on the host network, before any attach to the internal
+    one."""
+    image = f"{spec.image_repo}:{version}"
+    if spec.build_context is None:
+        ensure_image(image)
+        return image
+    if _image_present(image):
+        return image
+    build_args: list[str] = []
+    if spec.build_arg:
+        build_args = ["--build-arg", f"{spec.build_arg}={version}"]
+    _docker("build", "-t", image, *build_args, spec.build_context, timeout=1200)
+    return image
 
 
 def ensure_network() -> None:
@@ -87,8 +110,7 @@ def run_replay(product: str, version: str, template_path: Path) -> ReplayResult:
     always tears the target down."""
     ensure_network()
     spec = targets.spec(product)
-    image = f"{spec.image_repo}:{version}"
-    ensure_image(image)
+    image = ensure_target_image(spec, version)
     ensure_image(config.NUCLEI_IMAGE)
     ensure_image(config.READINESS_IMAGE)
 

@@ -85,6 +85,18 @@ def test_grafana_is_not_apache_specific():
     assert v831.outcome == "fail" and v831.matched is False, v831.evidence
 
 
+def test_mlflow_built_locally_fix_boundary():
+    # A third product (MLflow CVE-2023-1177) with no official image: the runner
+    # builds it from targets/mlflow/Dockerfile at the requested version. The LFI
+    # reads /etc/passwd on 2.1.1 and the 2.2.1 fix stops it. Proves the engine
+    # handles build-local targets, not just pullable ones.
+    t = config.REPLAYS_DIR / "cve-2023-1177.yaml"
+    vuln = run_replay("mlflow", "2.1.1", t)
+    fixed = run_replay("mlflow", "2.2.1", t)
+    assert vuln.outcome == "pass" and vuln.matched is True, vuln.evidence
+    assert fixed.outcome == "fail" and fixed.matched is False, fixed.evidence
+
+
 def test_auto_loop_search_then_execute():
     # Offline: seed the candidate report, let search pick it, then let execution
     # decide. An incoming double-encoded-traversal report should resolve to

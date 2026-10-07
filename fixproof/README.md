@@ -105,6 +105,19 @@ curl -s -X POST localhost:8099/scan -H 'content-type: application/json' \
 Adding a product = one `TargetSpec` (image repo, port, optional config mount) + a
 PoC template.
 
+A third product, **MLflow (CVE-2023-1177)**, is a local file read reached through a
+three-step model-registry flow — nothing like the httpd/Grafana URL traversals. It
+has no official versioned image, so the runner *builds* it from
+`targets/mlflow/Dockerfile` at the requested version instead of pulling it (the
+`TargetSpec` just adds a `build_context` and `build_arg`); the engine is otherwise
+untouched.
+
+```bash
+curl -s -X POST localhost:8099/scan -H 'content-type: application/json' \
+  -d '{"product":"mlflow","template":"cve-2023-1177","versions":["2.1.1","2.2.1"]}'
+# -> ALREADY_FIXED, last_vulnerable 2.1.1, fixed_in 2.2.1
+```
+
 ## Test
 
 ```bash

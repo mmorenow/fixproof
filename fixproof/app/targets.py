@@ -17,6 +17,11 @@ class TargetSpec:
     # host_path -> container_path mounts (read-only). Used for products that need
     # a deliberately vulnerable config; empty for products vulnerable by default.
     mounts: dict[str, str] = field(default_factory=dict)
+    # Set for products with no official versioned image: the runner builds the
+    # image locally from this Docker build context instead of pulling it, passing
+    # the requested version as `build_arg`. Left None for pull-only products.
+    build_context: str | None = None
+    build_arg: str | None = None
 
 
 TARGETS: dict[str, TargetSpec] = {
@@ -30,6 +35,15 @@ TARGETS: dict[str, TargetSpec] = {
     ),
     # Grafana's path traversal (CVE-2021-43798) needs no special config.
     "grafana": TargetSpec(image_repo="grafana/grafana", port=3000),
+    # MLflow (CVE-2023-1177). No official versioned image exists, so these are
+    # built locally from pip (see targets/mlflow/Dockerfile) — itself a sign that
+    # harder targets cost more setup than pulling an official tag.
+    "mlflow": TargetSpec(
+        image_repo="fixproof-mlflow",
+        port=5000,
+        build_context=str(config.TARGETS_DIR / "mlflow"),
+        build_arg="MLFLOW_VERSION",
+    ),
 }
 
 
