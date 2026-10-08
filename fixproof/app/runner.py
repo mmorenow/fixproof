@@ -36,6 +36,26 @@ def _docker(*args: str, timeout: int = 120, check: bool = True) -> subprocess.Co
     return proc
 
 
+def _hardening_flags(cap_add: list[str] | None = None) -> list[str]:
+    """Defense-in-depth flags applied to every container the engine spawns. The
+    untrusted input is the reporter's PoC, which nuclei interprets, so each
+    container starts from zero: no new privileges, all capabilities dropped (only
+    a target's listed caps added back), and hard pid/memory caps so a PoC cannot
+    exhaust the host. Combined with the egress-less network, a PoC can touch the
+    target and nothing else. gVisor is layered on when FIXPROOF_RUNTIME is set."""
+    flags = [
+        "--security-opt", "no-new-privileges",
+        "--cap-drop", "ALL",
+        "--pids-limit", config.PIDS_LIMIT,
+        "--memory", config.MEMORY_LIMIT,
+    ]
+    for cap in cap_add or []:
+        flags += ["--cap-add", cap]
+    if config.RUNTIME:
+        flags += ["--runtime", config.RUNTIME]
+    return flags
+
+
 def _image_present(image: str) -> bool:
     return _docker("image", "inspect", image, check=False).returncode == 0
 
@@ -93,6 +113,7 @@ def _wait_ready(target: str, port: int) -> bool:
         # a login redirect still counts as "up"; a connection refusal does not.
         proc = _docker(
             "run", "--rm", "--network", config.RUN_NETWORK,
+            *_hardening_flags(),
             config.READINESS_IMAGE,
             "wget", "-q", "-T", "3", "-O", "/dev/null", f"http://{target}:{port}/",
             check=False, timeout=15,
@@ -126,8 +147,7 @@ def run_replay(product: str, version: str, template_path: Path) -> ReplayResult:
         _docker(
             "run", "-d", "--name", target,
             "--network", config.RUN_NETWORK, "--network-alias", target,
-            "--security-opt", "no-new-privileges",
-            "--pids-limit", "256", "--memory", "768m",
+            *_hardening_flags(spec.cap_add),
             *mount_args,
             image,
         )
@@ -143,6 +163,7 @@ def run_replay(product: str, version: str, template_path: Path) -> ReplayResult:
 
             proc = _docker(
                 "run", "--rm", "--network", config.RUN_NETWORK,
+                *_hardening_flags(),
                 "-v", f"{out}:/out",
                 config.NUCLEI_IMAGE,
                 "-u", f"http://{target}:{spec.port}",

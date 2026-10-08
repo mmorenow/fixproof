@@ -22,6 +22,10 @@ class TargetSpec:
     # the requested version as `build_arg`. Left None for pull-only products.
     build_context: str | None = None
     build_arg: str | None = None
+    # Linux capabilities to add back on top of --cap-drop ALL. Only what a product
+    # genuinely needs: httpd binds port 80, which needs NET_BIND_SERVICE. Products
+    # on high ports (grafana 3000, mlflow 5000) need nothing, so this stays empty.
+    cap_add: list[str] = field(default_factory=list)
 
 
 TARGETS: dict[str, TargetSpec] = {
@@ -32,6 +36,7 @@ TARGETS: dict[str, TargetSpec] = {
             str(config.TARGETS_DIR / "httpd-cve-2021-41773" / "httpd.conf"):
                 "/usr/local/apache2/conf/httpd.conf",
         },
+        cap_add=["NET_BIND_SERVICE"],  # bind port 80 after dropping all caps
     ),
     # Grafana's path traversal (CVE-2021-43798) needs no special config.
     "grafana": TargetSpec(image_repo="grafana/grafana", port=3000),

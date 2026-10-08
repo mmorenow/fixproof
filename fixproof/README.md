@@ -139,9 +139,25 @@ targets/httpd-cve-2021-41773/
   httpd.conf   deliberately vulnerable Apache config (mounted into the throwaway target)
 ```
 
+## Isolation (the PoC is the untrusted input)
+
+FixProof runs reporter-supplied PoCs, so every container the engine spawns — the
+target, the nuclei runner that interprets the PoC, and the readiness probe — starts
+locked down (`app/runner.py:_hardening_flags`):
+
+- **No egress.** They share an `--internal` Docker network with no route to the
+  host or the internet. A PoC can reach the target and nothing else.
+- **All capabilities dropped.** `--cap-drop ALL`; a target adds back only what it
+  needs (httpd re-gains `NET_BIND_SERVICE` to bind port 80; Grafana and MLflow,
+  on high ports, add back nothing). A hardened container shows `CapEff: 0`.
+- **No privilege escalation.** `--security-opt no-new-privileges` everywhere.
+- **Bounded resources.** `--pids-limit` and `--memory` so a PoC cannot fork-bomb
+  or balloon the host (`FIXPROOF_PIDS_LIMIT`, `FIXPROOF_MEMORY_LIMIT`).
+- **gVisor, optional.** Set `FIXPROOF_RUNTIME=runsc` to run every container under
+  gVisor where it is installed. Left unset it uses Docker's default runtime, so
+  the sandbox works everywhere and gVisor is a drop-in upgrade, not a dependency.
+
 ## Notes
 
-- Targets and the nuclei runner share an `--internal` Docker network, so a PoC has
-  no internet access. Stronger sandboxing (gVisor, cap-drop) comes in Phase 2.
 - Host port 55432 avoids a clash with a local Postgres on 5432. Override with
   `FIXPROOF_DATABASE_URL`.

@@ -27,3 +27,13 @@ TARGETS_DIR = ROOT / "targets"
 # Per-run limits.
 TARGET_READY_TIMEOUT_S = int(os.environ.get("FIXPROOF_TARGET_READY_TIMEOUT_S", "90"))
 NUCLEI_TIMEOUT_S = int(os.environ.get("FIXPROOF_NUCLEI_TIMEOUT_S", "60"))
+
+# Optional OCI runtime for every spawned container (target, PoC runner, probe).
+# Set FIXPROOF_RUNTIME=runsc to run them under gVisor where it is installed; left
+# empty it uses Docker's default runtime, so the sandbox works everywhere and
+# gVisor is a drop-in upgrade, not a hard dependency.
+RUNTIME = os.environ.get("FIXPROOF_RUNTIME", "").strip() or None
+
+# Resource caps applied to every spawned container.
+PIDS_LIMIT = os.environ.get("FIXPROOF_PIDS_LIMIT", "256")
+MEMORY_LIMIT = os.environ.get("FIXPROOF_MEMORY_LIMIT", "768m")
