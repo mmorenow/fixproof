@@ -37,18 +37,23 @@ def _docker(*args: str, timeout: int = 120, check: bool = True) -> subprocess.Co
     return proc
 
 
-def _hardening_flags(cap_add: list[str] | None = None) -> list[str]:
+def _hardening_flags(cap_add: list[str] | None = None, *,
+                     memory: str | None = None, pids: str | None = None) -> list[str]:
     """Defense-in-depth flags applied to every container the engine spawns. The
     untrusted input is the reporter's PoC, which nuclei interprets, so each
     container starts from zero: no new privileges, all capabilities dropped (only
     a target's listed caps added back), and hard pid/memory caps so a PoC cannot
     exhaust the host. Combined with the egress-less network, a PoC can touch the
-    target and nothing else. gVisor is layered on when FIXPROOF_RUNTIME is set."""
+    target and nothing else. gVisor is layered on when FIXPROOF_RUNTIME is set.
+
+    `memory`/`pids` override the global caps for a heavier target (a JVM app needs
+    more than the default); the probe and the nuclei runner always use the tight
+    defaults, since nothing untrusted should need more."""
     flags = [
         "--security-opt", "no-new-privileges",
         "--cap-drop", "ALL",
-        "--pids-limit", config.PIDS_LIMIT,
-        "--memory", config.MEMORY_LIMIT,
+        "--pids-limit", pids or config.PIDS_LIMIT,
+        "--memory", memory or config.MEMORY_LIMIT,
     ]
     for cap in cap_add or []:
         flags += ["--cap-add", cap]
@@ -61,12 +66,17 @@ def _image_present(image: str) -> bool:
     return _docker("image", "inspect", image, check=False).returncode == 0
 
 
-def ensure_image(image: str) -> None:
+def ensure_image(image: str, platform: str | None = None) -> None:
     """Pull an image if it is not already local. Pull happens over the host network
-    before any container attaches to the internal network."""
+    before any container attaches to the internal network. `platform` forces an
+    architecture for single-arch images on a different host (Docker emulates it)."""
     if _image_present(image):
         return
-    _docker("pull", image, timeout=600)
+    args = ["pull"]
+    if platform:
+        args += ["--platform", platform]
+    args.append(image)
+    _docker(*args, timeout=600)
 
 
 def ensure_target_image(spec: targets.TargetSpec, version: str) -> str:
@@ -77,14 +87,15 @@ def ensure_target_image(spec: targets.TargetSpec, version: str) -> str:
     one."""
     image = f"{spec.image_repo}:{version}"
     if spec.build_context is None:
-        ensure_image(image)
+        ensure_image(image, platform=spec.platform)
         return image
     if _image_present(image):
         return image
     build_args: list[str] = []
     if spec.build_arg:
         build_args = ["--build-arg", f"{spec.build_arg}={version}"]
-    _docker("build", "-t", image, *build_args, spec.build_context, timeout=1200)
+    platform_args = ["--platform", spec.platform] if spec.platform else []
+    _docker("build", *platform_args, "-t", image, *build_args, spec.build_context, timeout=1200)
     return image
 
 
@@ -182,13 +193,24 @@ def run_replay(product: str, version: str, template_path: Path,
     for host_path, container_path in spec.mounts.items():
         mount_args += ["-v", f"{host_path}:{container_path}:ro"]
 
+    env_args: list[str] = []
+    for key, value in spec.env.items():
+        env_args += ["-e", f"{key}={value}"]
+
+    platform_args = ["--platform", spec.platform] if spec.platform else []
+    user_args = ["--user", spec.user] if spec.user else []
+
     try:
         _docker(
             "run", "-d", "--name", target,
             "--network", config.RUN_NETWORK, "--network-alias", target,
-            *_hardening_flags(spec.cap_add),
+            *platform_args,
+            *user_args,
+            *_hardening_flags(spec.cap_add, memory=spec.memory_limit, pids=spec.pids_limit),
+            *env_args,
             *mount_args,
             image,
+            *spec.command,
         )
         _wait_ready(target, spec.port)
 

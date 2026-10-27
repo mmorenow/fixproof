@@ -97,6 +97,20 @@ def test_mlflow_built_locally_fix_boundary():
     assert fixed.outcome == "fail" and fixed.matched is False, fixed.evidence
 
 
+def test_flink_amd64_emulated_fix_boundary():
+    # A fourth real product (Apache Flink CVE-2020-17519), added after the engine
+    # was built. It is amd64-only, so it runs under emulation on an arm64 host, and
+    # it must start as its own user because the sandbox drops the caps its gosu
+    # entrypoint needs to switch users. The JobManager REST path traversal reads
+    # /etc/passwd on 1.11.2 and the 1.11.3 fix stops it — only a target spec and a
+    # template were added, proving the engine extends to software it did not know.
+    t = config.REPLAYS_DIR / "flink-cve-2020-17519.yaml"
+    vuln = run_replay("flink", "1.11.2", t)
+    fixed = run_replay("flink", "1.11.3", t)
+    assert vuln.outcome == "pass" and vuln.matched is True, vuln.evidence
+    assert fixed.outcome == "fail" and fixed.matched is False, fixed.evidence
+
+
 def test_auto_loop_search_then_execute():
     # Offline: seed the candidate report, let search pick it, then let execution
     # decide. An incoming double-encoded-traversal report should resolve to

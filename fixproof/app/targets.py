@@ -31,6 +31,23 @@ class TargetSpec:
     # image. Only meaningful for build-local products that carry their own source.
     patch_workdir: str = "/app"
     patch_strip: int = 0
+    # Optional command and environment for the target container. Some products
+    # need a subcommand (Flink: `jobmanager`) or config via env; most are
+    # vulnerable as they run by default and set neither.
+    command: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    # Per-target resource caps, overriding the global defaults when a product needs
+    # more (a JVM app like Flink will OOM under the default 768m). None = default.
+    memory_limit: str | None = None
+    pids_limit: str | None = None
+    # Force a platform for images that ship only one architecture (e.g. an old
+    # amd64-only release on an arm64 host). Docker emulates it. None = host native.
+    platform: str | None = None
+    # Run the container as this user. Some images start as root and switch users
+    # via gosu/setuid in their entrypoint, which --cap-drop ALL + no-new-privileges
+    # blocks; running directly as the app user skips the switch (and is tighter).
+    # None = the image's default user.
+    user: str | None = None
 
 
 TARGETS: dict[str, TargetSpec] = {
@@ -53,6 +70,21 @@ TARGETS: dict[str, TargetSpec] = {
         port=5000,
         build_context=str(config.TARGETS_DIR / "mlflow"),
         build_arg="MLFLOW_VERSION",
+    ),
+    # Apache Flink's JobManager REST path traversal (CVE-2020-17519): an encoded
+    # ../ on /jobmanager/logs/ reads any local file. Works on 1.11.0-1.11.2, fixed
+    # in 1.11.3. The official image needs the `jobmanager` subcommand, a REST bind
+    # address reachable from another container, and more memory than a JVM gets
+    # under the default cap. A fourth real product, not built into the engine.
+    "flink": TargetSpec(
+        image_repo="flink",
+        port=8081,
+        command=["jobmanager"],
+        env={"FLINK_PROPERTIES": "jobmanager.rpc.address: localhost\nrest.address: 0.0.0.0\nrest.bind-address: 0.0.0.0\n"},
+        memory_limit="2g",
+        pids_limit="1024",
+        platform="linux/amd64",  # 1.11.x ships amd64 only; emulated on arm64
+        user="flink",            # start as flink so the entrypoint skips its gosu switch
     ),
     # A deliberately vulnerable internal app with no CVE and no public image: the
     # patch-on-top demo. Built from source (targets/vulnapp), fixed only by the
