@@ -1,0 +1,34 @@
+id: vulnapp-path-traversal
+
+info:
+  name: Internal app path traversal (no CVE)
+  author: fixproof
+  severity: high
+  description: >
+    The internal demo app joins the `file` query parameter onto its web root with
+    no containment check, so an encoded `../` reads a canary planted outside the
+    root. There is no CVE and no public image: the only fix is the team's own
+    unreleased patch, which FixProof applies on top of the base build to verify it.
+  reference:
+    - https://owasp.org/www-community/attacks/Path_Traversal
+
+http:
+  - raw:
+      - |+
+        GET /download?file=../../secret_canary.txt HTTP/1.1
+        Host: {{Hostname}}
+        Connection: close
+
+    unsafe: true
+
+    matchers-condition: and
+    matchers:
+      # State oracle: the body is the canary planted OUTSIDE the web root, so a
+      # plain 200 (or a 403 from the patched build) does not count as a hit.
+      - type: word
+        part: body
+        words:
+          - "CANARY-SECRET-7f3a"
+      - type: status
+        status:
+          - 200

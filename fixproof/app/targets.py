@@ -26,6 +26,11 @@ class TargetSpec:
     # genuinely needs: httpd binds port 80, which needs NET_BIND_SERVICE. Products
     # on high ports (grafana 3000, mlflow 5000) need nothing, so this stays empty.
     cap_add: list[str] = field(default_factory=list)
+    # patch-on-top: where the app source lives inside the image and the `patch -p`
+    # strip level, so the runner can apply a candidate fix diff on top of a built
+    # image. Only meaningful for build-local products that carry their own source.
+    patch_workdir: str = "/app"
+    patch_strip: int = 0
 
 
 TARGETS: dict[str, TargetSpec] = {
@@ -49,7 +54,23 @@ TARGETS: dict[str, TargetSpec] = {
         build_context=str(config.TARGETS_DIR / "mlflow"),
         build_arg="MLFLOW_VERSION",
     ),
+    # A deliberately vulnerable internal app with no CVE and no public image: the
+    # patch-on-top demo. Built from source (targets/vulnapp), fixed only by the
+    # team's own unreleased diff (targets/vulnapp/fixes/*.patch).
+    "vulnapp": TargetSpec(
+        image_repo="fixproof-vulnapp",
+        port=8080,
+        build_context=str(config.TARGETS_DIR / "vulnapp"),
+        build_arg="VULNAPP_VERSION",
+        patch_workdir="/app",
+        patch_strip=0,
+    ),
 }
+
+
+def fix_path(product: str, fix: str) -> str:
+    """Resolve a named fix diff under targets/<product>/fixes/<fix>.patch."""
+    return str(config.TARGETS_DIR / product / "fixes" / f"{fix}.patch")
 
 
 def spec(product: str) -> TargetSpec:

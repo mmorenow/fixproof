@@ -9,6 +9,7 @@ the guardrail that matters now.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -87,6 +88,38 @@ def ensure_target_image(spec: targets.TargetSpec, version: str) -> str:
     return image
 
 
+def ensure_patched_image(spec: targets.TargetSpec, base_image: str, patch_path: Path) -> str:
+    """Build `base_image` with a candidate fix diff applied on top, and return the
+    patched image ref. This is the snapshot provider's patch-on-top mode: it lets
+    FixProof test a fix that ships in no public version — an unreleased or internal
+    patch — by layering the diff over the built image and rebuilding.
+
+    The derived build is tagged by the patch's content hash, so re-verifying the
+    same fix reuses the image. `patch` is installed into the layer only if the base
+    image lacks it. The build runs on the host network, before any container joins
+    the egress-less run network."""
+    patch_bytes = patch_path.read_bytes()
+    digest = hashlib.sha1(patch_bytes).hexdigest()[:10]
+    image = f"{spec.image_repo}:patched-{digest}"
+    if _image_present(image):
+        return image
+
+    dockerfile = f"""FROM {base_image}
+USER root
+RUN set -e; if ! command -v patch >/dev/null 2>&1; then \
+        apt-get update && apt-get install -y --no-install-recommends patch \
+        && rm -rf /var/lib/apt/lists/*; fi
+COPY fix.patch /tmp/fix.patch
+RUN cd {spec.patch_workdir} && patch -p{spec.patch_strip} < /tmp/fix.patch
+"""
+    with tempfile.TemporaryDirectory() as ctx:
+        ctxp = Path(ctx)
+        (ctxp / "Dockerfile").write_text(dockerfile)
+        (ctxp / "fix.patch").write_bytes(patch_bytes)
+        _docker("build", "-t", image, str(ctxp), timeout=1200)
+    return image
+
+
 def ensure_network() -> None:
     net = config.RUN_NETWORK
     if _docker("network", "inspect", net, check=False).returncode == 0:
@@ -125,13 +158,19 @@ def _wait_ready(target: str, port: int) -> bool:
     raise DockerError(f"target {target}:{port} not ready within timeout: {last}")
 
 
-def run_replay(product: str, version: str, template_path: Path) -> ReplayResult:
+def run_replay(product: str, version: str, template_path: Path,
+               image: str | None = None) -> ReplayResult:
     """Run one template against one version. Starts a fresh target, probes it,
     runs nuclei on the same egress-less network, parses the oracle result, and
-    always tears the target down."""
+    always tears the target down.
+
+    `image` overrides which image is stood up (version then labels the run only).
+    It is how patch-on-top runs the PoC against a patched build: the caller passes
+    the image from ensure_patched_image instead of a published version tag."""
     ensure_network()
     spec = targets.spec(product)
-    image = ensure_target_image(spec, version)
+    if image is None:
+        image = ensure_target_image(spec, version)
     ensure_image(config.NUCLEI_IMAGE)
     ensure_image(config.READINESS_IMAGE)
 

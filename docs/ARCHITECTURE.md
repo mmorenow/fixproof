@@ -168,12 +168,16 @@ events(...)                                      -- append-only audit log
 
 | Phase | Goal | Done when |
 |---|---|---|
-| **0. Skeleton** | Repo, FastAPI + Postgres, hardened runner | One API call runs a Nuclei template against `httpd:2.4.49` and `2.4.50` and stores both results |
-| **1. Execution core** | Oracles for 3 classes (path traversal, IDOR, auth bypass), version ladder, `fixed_in` bisection | The Apache demo (section 10) works end to end |
-| **2. Verdicts** | Fix-differential, patch-on-top, verdict engine, policy presets, graph guardrails, human review | The tool returns typed verdicts with evidence. **This completes the core.** |
+| **0. Skeleton** ✅ | Repo, FastAPI + Postgres, hardened runner | One API call runs a Nuclei template against `httpd:2.4.49` and `2.4.50` and stores both results |
+| **1. Execution core** ✅ | Oracles for 3 classes (path traversal, IDOR, auth bypass), version ladder, `fixed_in` bisection | The Apache demo (section 10) works end to end |
+| **2. Verdicts** (mostly done) | Fix-differential, patch-on-top, verdict engine, policy presets, graph guardrails, human review | The tool returns typed verdicts with evidence. **This completes the core.** |
 | **3. Intake + memory** | GitHub PVR + email intake, candidate search, provisional re-run, regression ledger | A report arriving by webhook gets a verdict automatically |
 | **4. LLM layer + hardening** | Claim extraction, PoC compiler, BYO model, prompt-injection red-team | A plain-text report becomes a verified replay test |
 | **5. Proof + release** | Evaluation on public cases, docs, demo video | Published numbers: verdict accuracy, abstention rate, false merges |
+
+**Phase 2 status.** Done: the full verdict engine (`DUPLICATE`, `BYPASS`, `NOVEL`, `REGRESSION`, `NOT_REPRODUCED`, `NEEDS_INFO`, `ABSTAIN`; `app/verdict.py`), the version-ladder scan with regression detection, patch-on-top for unreleased/internal fixes (`app/runner.py:ensure_patched_image`, `POST /verify-fix`, `FIX_CONFIRMED`/`FIX_INCOMPLETE`), and the declarative policy layer with safety invariants (`app/policy.py`). Remaining: the duplicate-graph guardrails in PostgreSQL (anti-cycle trigger, one-canonical partial index, legal transitions, audit log) and a human-review surface.
+
+**Why this matters now (2026).** Bug-bounty intake is being overwhelmed by AI-generated reports that read as credible but carry no reproducible evidence — Google paused its OSS VRP, curl and CycloneDX closed programs. FixProof's "execution decides" is the direct answer: a report with no runnable evidence gets `NOT_REPRODUCED` and a request for a PoC, never a verdict. See `docs/research/`.
 
 **Later:** browser bugs (Playwright), more vuln classes, a GitHub Action / CI mode, and a hunter mode.
 

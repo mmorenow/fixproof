@@ -9,12 +9,26 @@ comes from running the PoC, not from reading text.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from . import catalog, config, db, ingest, search, verdict
-from .runner import run_replay
+from . import catalog, config, db, ingest, policy, search, targets, verdict
+from .runner import ensure_patched_image, ensure_target_image, run_replay
+
+
+def _disposition(policy_name: str | None, v: verdict.Verdict) -> dict:
+    """Resolve the policy and map the verdict to a disposition for the response."""
+    pol = policy.get(policy_name)
+    d = policy.apply(pol, v)
+    return {
+        "policy": pol.name,
+        "action": d.action,
+        "rationale": d.rationale,
+        "auto": d.auto,
+        "needs_human": d.needs_human,
+    }
 
 app = FastAPI(title="FixProof", version="0.0.1")
 
@@ -33,6 +47,20 @@ class ReplayRequest(BaseModel):
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/policies")
+def policies() -> dict:
+    """The available counting-rule presets a triage call can run under."""
+    return {
+        "default": policy.DEFAULT_POLICY,
+        "presets": [
+            {"name": p.name, "description": p.description,
+             "auto_close_duplicates": p.auto_close_duplicates,
+             "auto_open_new": p.auto_open_new}
+            for p in policy.PRESETS.values()
+        ],
+    }
 
 
 @app.post("/replays/run")
@@ -108,6 +136,7 @@ class TriageRequest(BaseModel):
     candidate_template: str
     candidate_pre_fix: str   # last version before the candidate's fix (control)
     candidate_fixed_in: str  # first version with the candidate's fix
+    policy: str = policy.DEFAULT_POLICY  # receiver's counting rules
 
 
 @app.post("/triage")
@@ -142,6 +171,7 @@ def triage(req: TriageRequest) -> dict:
         "reason": v.reason,
         "new_report": req.new_template,
         "candidate": req.candidate_template,
+        "disposition": _disposition(req.policy, v),
         "evidence": evidence,
     }
 
@@ -168,7 +198,48 @@ def scan(req: ScanRequest) -> dict:
         "status": sr.status,
         "last_vulnerable": sr.last_vulnerable,
         "fixed_in": sr.fixed_in,
+        "regressed_in": sr.regressed_in,
         "per_version": sr.per_version,
+    }
+
+
+class VerifyFixRequest(BaseModel):
+    product: str = "vulnapp"
+    version: str = "1.0.0"   # the vulnerable build the PoC reproduces on
+    template: str            # the PoC that reproduces the bug
+    fix: str                 # named diff under targets/<product>/fixes/<fix>.patch
+
+
+@app.post("/verify-fix")
+def verify_fix(req: VerifyFixRequest) -> dict:
+    """Patch-on-top: does a candidate fix actually stop the PoC? Runs it on the
+    unpatched build (the control) and on the build with the fix diff applied on
+    top. This verifies fixes that ship in no public version yet — the unreleased
+    or internal patches an outside platform never sees."""
+    template_path = config.REPLAYS_DIR / f"{req.template}.yaml"
+    if not template_path.exists():
+        raise HTTPException(404, f"template not found: {req.template}")
+    patch_path = Path(targets.fix_path(req.product, req.fix))
+    if not patch_path.exists():
+        raise HTTPException(404, f"fix not found: {req.fix}")
+
+    spec = targets.spec(req.product)
+    base_image = ensure_target_image(spec, req.version)
+    patched_image = ensure_patched_image(spec, base_image, patch_path)
+
+    control = run_replay(req.product, req.version, template_path, image=base_image)
+    patched = run_replay(req.product, f"{req.version}+{req.fix}", template_path, image=patched_image)
+    v = verdict.verify_fix(control, patched)
+
+    return {
+        "verdict": v.label,
+        "reason": v.reason,
+        "product": req.product,
+        "fix": req.fix,
+        "evidence": {
+            "unpatched": {"version": req.version, "outcome": control.outcome, "matched": control.matched},
+            "patched": {"fix": req.fix, "outcome": patched.outcome, "matched": patched.matched},
+        },
     }
 
 
@@ -177,6 +248,7 @@ class AutoTriageRequest(BaseModel):
     text: str                 # the report prose, used to search for candidates
     new_template: str         # the incoming report's replayable PoC
     product: str | None = None  # if omitted, taken from the chosen candidate
+    policy: str = policy.DEFAULT_POLICY  # receiver's counting rules
 
 
 @app.post("/triage/auto")
@@ -193,8 +265,13 @@ def triage_auto(req: AutoTriageRequest) -> dict:
     # Pick the top-ranked candidate we can actually replay against.
     chosen = next((c for c in ranked if catalog.get(c["external_id"])), None)
     if chosen is None:
-        return {"verdict": verdict.ABSTAIN,
-                "reason": "no runnable candidate among the search results",
+        # No candidate to run the fix-differential against. We cannot confirm NOVEL
+        # here without a notion of "latest" per product, so we abstain honestly
+        # rather than invent a verdict.
+        nv = verdict.decide_no_candidate(None)
+        return {"verdict": nv.label,
+                "reason": nv.reason,
+                "disposition": _disposition(req.policy, nv),
                 "candidates": ranked}
 
     run = catalog.get(chosen["external_id"])
@@ -220,6 +297,7 @@ def triage_auto(req: AutoTriageRequest) -> dict:
         "chosen_candidate": chosen["external_id"],
         "candidate_score": chosen["score"],
         "new_report": req.new_template,
+        "disposition": _disposition(req.policy, v),
         "evidence": evidence,
         "all_candidates": [c["external_id"] for c in ranked],
     }

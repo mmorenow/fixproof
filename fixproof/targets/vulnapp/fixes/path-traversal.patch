@@ -1,0 +1,18 @@
+--- server.py
++++ server.py
+@@ -20,9 +20,12 @@
+         parts = urlparse(self.path)
+         if parts.path == "/download":
+             name = (parse_qs(parts.query).get("file") or [""])[0]
+-            # VULNERABLE: user input is joined to BASE with no containment check,
+-            # so "../../secret_canary.txt" resolves outside the web root.
+-            path = os.path.join(BASE, name)
++            # FIXED: resolve the real path and refuse anything outside BASE.
++            path = os.path.realpath(os.path.join(BASE, name))
++            if path != BASE and not path.startswith(BASE + os.sep):
++                self.send_response(403)
++                self.end_headers()
++                return
+             try:
+                 with open(path, "rb") as f:
+                     body = f.read()

@@ -1,9 +1,16 @@
-# FixProof — Phases 0–1
+# FixProof — Phases 0–2
 
-The execution core plus the triage verdict. FixProof stands up Apache httpd at
-several versions, replays a PoC against each on an egress-less Docker network, and
-decides whether a new report is a duplicate of an earlier one by running its PoC
-*before* and *after* the earlier fix — not by comparing text.
+The execution core, the triage verdict, and the full verdict + policy engine.
+FixProof stands up a target at several versions, replays a PoC against each on an
+egress-less Docker network, and decides — by running the PoC, not by comparing text
+— whether a new report is a duplicate, a bypass, a regression, already fixed, or
+simply not reproducible. It can also verify an **unreleased fix** by applying the
+patch on top of a built image (patch-on-top).
+
+> In 2026, bug-bounty programs (Google OSS VRP, curl, CycloneDX) buckled under
+> AI-generated reports that read well but run nothing. FixProof's answer: a report
+> with no reproducible evidence gets `NOT_REPRODUCED` and a request for a PoC, never
+> a verdict. The LLM proposes; execution decides.
 
 ## Requires
 
@@ -83,13 +90,52 @@ curl -s -X POST localhost:8099/triage/auto -H 'content-type: application/json' -
 # -> chosen_candidate CVE-2021-41773 (score ~1.84), verdict BYPASS
 ```
 
-## Scan a version ladder ("is it already fixed?")
+## Scan a version ladder ("is it already fixed? did it come back?")
 
 ```bash
 curl -s -X POST localhost:8099/scan -H 'content-type: application/json' \
   -d '{"template":"cve-2021-41773","versions":["2.4.49","2.4.50","2.4.51"]}'
 # -> status ALREADY_FIXED, last_vulnerable 2.4.49, fixed_in 2.4.50
 ```
+
+The scan also detects **regressions** (`pass → fail → pass` across the ladder: a fix
+that was undone in a later version) and reports `regressed_in`.
+
+## Verify an unreleased fix (patch-on-top)
+
+The case no outside platform can serve: a private app with **no CVE and no public
+image**, whose fix ships in no released version — only the team's own patch. FixProof
+builds the vulnerable app, applies the fix diff *on top* of that image, and re-runs
+the PoC. If the PoC stops, the fix is confirmed — proven by execution, not by reading
+the diff.
+
+```bash
+curl -s -X POST localhost:8099/verify-fix -H 'content-type: application/json' -d '{
+  "product":"vulnapp","version":"1.0.0",
+  "template":"vulnapp-path-traversal","fix":"path-traversal"}'
+# -> verdict FIX_CONFIRMED: the PoC reads the canary before the patch, and the
+#    patch (targets/vulnapp/fixes/path-traversal.patch) stops it.
+```
+
+A patch that does *not* stop the PoC returns `FIX_INCOMPLETE`; a PoC that never
+reproduced on the unpatched build returns `NOT_REPRODUCED` (nothing to verify).
+
+## Verdicts and policies
+
+The verdict engine (`app/verdict.py`) emits a typed label — `DUPLICATE`, `BYPASS`,
+`NOVEL`, `REGRESSION`, `NOT_REPRODUCED`, `NEEDS_INFO`, `ABSTAIN` — purely from
+execution outcomes. The policy layer (`app/policy.py`) turns that into an action
+under the receiver's counting rules (`GET /policies` lists the presets):
+
+| Preset | Behaviour |
+|---|---|
+| `default` | auto-close confident duplicates, auto-open distinct bugs, request evidence when nothing reproduces |
+| `conservative` | change nothing automatically; every close and new issue is human-confirmed |
+| `cna` | CVE counting rules: independently fixable bugs (bypass/regression) are always counted separately |
+
+Two safety invariants hold under **every** preset: a `BYPASS`/`REGRESSION` is never
+closed as a duplicate, and a report with no reproducible evidence never triggers a
+state change — the gate against AI-generated noise.
 
 ## Not Apache-specific
 
@@ -128,15 +174,22 @@ uv run pytest -s
 
 ```
 app/
-  main.py      FastAPI: POST /replays/run, GET /replays/{batch_id}
-  runner.py    starts a target + nuclei container on the isolated network, parses the oracle
+  main.py      FastAPI endpoints: /triage, /triage/auto, /scan, /verify-fix, /search, /policies, /replays
+  runner.py    starts a target + nuclei container on the isolated network; builds/pulls/patches images
+  verdict.py   the verdict engine: outcomes -> DUPLICATE/BYPASS/NOVEL/REGRESSION/NOT_REPRODUCED/... and verify_fix
+  policy.py    counting-rule presets: a verdict -> an action, with safety invariants
+  search.py    lexical candidate proposer (full-text + trigram) over past reports
+  catalog.py   reports we can replay (template + fix boundary)
+  ingest.py    pulls real CVE text from OSV
   db.py        psycopg3 helpers
-  schema.sql   replay_runs and friends
+  schema.sql   reports, replay_runs, verdicts, ...
   config.py    env-driven settings
-replays/
-  cve-2021-41773.yaml      the PoC as a Nuclei template (the state oracle)
-targets/httpd-cve-2021-41773/
-  httpd.conf   deliberately vulnerable Apache config (mounted into the throwaway target)
+replays/       PoCs as Nuclei templates (the state oracles)
+targets/
+  httpd-cve-2021-41773/httpd.conf   deliberately vulnerable Apache config
+  mlflow/                           build-local target (no official image)
+  vulnapp/                          the patch-on-top demo app + fixes/*.patch (unreleased fix)
+tests/         test_verdict.py, test_policy.py (pure); test_smoke.py, test_patch_on_top.py (Docker)
 ```
 
 ## Isolation (the PoC is the untrusted input)
