@@ -13,24 +13,13 @@
 
 </div>
 
-Two reports. Both read `/etc/passwd` through an encoded `../` in Apache httpd. Same
-file, same CWE, nearly the same wording. A similarity-based deduplicator merges them
-and closes the second one as a duplicate.
+## The gap
 
-The second one is CVE-2021-42013: a bypass of the first one's fix, exploited in the
-wild. FixProof keeps it open, because it ran the PoC and watched it survive the patch.
+Two reports are the same bug if one fix fixes both. Dedup tools compare text,
+embeddings and endpoint fingerprints. None of them test the fix.
 
-## The idea
-
-The industry already defines a duplicate by the fix, not by the text: two reports are
-the same bug **if one fix fixes both** (Bugcrowd's "similar ≠ same", Intigriti's "would
-the first fix have fixed the second?", CNA rule 4.1.9 "independently fixable").
-Deployed dedup tooling compares text, embeddings and endpoint fingerprints. None of it
-tests the fix.
-
-FixProof tests the fix. It replays the new report's PoC on the version right before
-the earlier report's fix and on the version right after it, inside a locked-down
-sandbox, and reads the result:
+FixProof does. It replays the new report's PoC on the version right before the
+earlier report's fix and on the version right after it, inside a locked-down sandbox:
 
 ```text
   the new report's PoC...
@@ -42,17 +31,13 @@ sandbox, and reads the result:
   a run errored                               ABSTAIN
 ```
 
-The run before the fix is the control: it proves the PoC works at all. Only then does
-its behavior after the fix mean anything. A report whose PoC never reproduces gets a
-request for evidence, not a verdict, which is the whole defense against well-written
-reports that run nothing.
-
-> Search proposes. Execution decides.
+The run before the fix is the control: it proves the PoC works. A report whose PoC
+never reproduces gets a request for evidence, not a verdict.
 
 ## See it decide
 
-Real output, real CVEs. Is CVE-2021-42013 a duplicate of CVE-2021-41773, which was
-fixed in httpd 2.4.50?
+CVE-2021-41773 was fixed in httpd 2.4.50. CVE-2021-42013 reads the same file with a
+nearly identical request. Is it a duplicate?
 
 ```console
 $ curl -s localhost:8099/triage --json @examples/triage-bypass.json \
@@ -187,8 +172,6 @@ version (MLflow), and private apps are built from source with the fix applied as
 diff on top (`targets/vulnapp`).
 
 ## Limits
-
-Stated plainly, because a triage tool that overclaims is worse than none.
 
 - **Release-level differential.** `/triage` compares two released versions, so
   `DUPLICATE` means "something that shipped between them stops this PoC". When a
