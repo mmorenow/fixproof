@@ -3,10 +3,12 @@ __pycache__/
 .venv/
 .env
 fixproof/.venv/
-uv.lock
 .DS_Store
 .pytest_cache/
 
 # research scratch (downloaded papers / scraped notes, not part of the tool)
 paper_dl_arxiv/
 .firecrawl/
+
+# personal pre-project notes, kept local
+archive/

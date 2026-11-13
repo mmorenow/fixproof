@@ -1,0 +1,7 @@
+{
+  "product": "httpd",
+  "new_template": "cve-2021-41773",
+  "candidate_template": "cve-2021-41773",
+  "candidate_pre_fix": "2.4.49",
+  "candidate_fixed_in": "2.4.50"
+}

@@ -63,7 +63,7 @@ create, and the right resolution keeps the lockdown intact.
 
 ```bash
 docker compose up -d
-uv run pytest -q            # 38 tests; test_smoke.py + test_patch_on_top.py cover every row above
+uv run pytest -q            # test_smoke.py + test_patch_on_top.py cover every row above
 ```
 
 Or hit the API directly (see fixproof/README.md) with `/scan` for the ladders and

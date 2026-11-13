@@ -1,0 +1,6 @@
+{
+  "product": "vulnapp",
+  "version": "1.0.0",
+  "template": "vulnapp-path-traversal",
+  "fix": "path-traversal"
+}

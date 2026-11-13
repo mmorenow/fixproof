@@ -1,8 +1,9 @@
-"""Phase 0 smoke test. Requires Docker and the Postgres container to be up
-(`docker compose up -d`). Runs the real replay against three Apache versions and
-asserts the known CVE-2021-41773 outcome: vulnerable in 2.4.49, fixed in 2.4.50+.
+"""End-to-end replays against real CVEs. Requires Docker and the Postgres
+container to be up (`docker compose up -d`). Each test stands up real product
+versions (Apache httpd, Grafana, MLflow, Flink), replays the PoC, and asserts the
+outcome the vendor advisory says it should have.
 
-Run with: uv run pytest -s
+Run with: uv run pytest tests/test_smoke.py -s
 """
 from __future__ import annotations
 

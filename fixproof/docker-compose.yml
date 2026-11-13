@@ -1,4 +1,4 @@
-# Phase 0 only runs PostgreSQL here. The app runs on the host (uv run), and it
+# Only PostgreSQL runs here. The app runs on the host (uv run), and it
 # starts target + nuclei containers itself on the isolated `fixproof-run` network.
 services:
   db:

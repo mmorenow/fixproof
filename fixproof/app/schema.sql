@@ -1,10 +1,10 @@
--- fixproof Phase 0 schema (a trimmed subset of docs/ARCHITECTURE.md section 8).
--- Only the tables the execution core writes to in Phase 0.
+-- FixProof schema (a trimmed subset of docs/ARCHITECTURE.md section 8): the
+-- tables the execution core, the candidate search and the triage verdict use.
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
--- Incoming and historical reports. In Phase 1 these are real public CVE
+-- Incoming and historical reports. Today these are real public CVE
 -- descriptions pulled from OSV; later they are hunter-written reports. The
 -- candidate proposer (app/search.py) ranks over this table. `search` is a
 -- generated full-text column; a trigram index handles fuzzy lexical overlap.
@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
 );
 
 -- One row per (artifact x snapshot x attempt). This is the raw evidence that the
--- verdict engine (Phase 2) will later read. In Phase 0 we just record it.
+-- verdict engine reads.
 CREATE TABLE IF NOT EXISTS replay_runs (
     id             BIGSERIAL PRIMARY KEY,
     batch_id       UUID NOT NULL,          -- groups the versions tested in one request
