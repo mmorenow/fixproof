@@ -80,8 +80,14 @@ DEFAULT_POLICY = "default"
 
 
 def get(name: str | None) -> Policy:
-    """Resolve a preset by name, falling back to the default."""
-    return PRESETS.get(name or DEFAULT_POLICY, PRESETS[DEFAULT_POLICY])
+    """Resolve a preset by name; None means the default. An unknown name raises
+    instead of falling back, so a misspelled "conservative" can never silently
+    become a policy that auto-closes."""
+    if name is None:
+        return PRESETS[DEFAULT_POLICY]
+    if name not in PRESETS:
+        raise KeyError(f"unknown policy: {name}")
+    return PRESETS[name]
 
 
 def apply(policy: Policy, v: V.Verdict) -> Disposition:

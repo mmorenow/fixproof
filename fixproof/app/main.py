@@ -1,26 +1,67 @@
-"""fixproof Phase 0 API.
+"""FixProof API.
 
-One endpoint stands up each requested httpd version, replays a PoC against it on
-an egress-less network, and stores whether the state oracle matched. This is the
-execution core the whole project is built on: `the LLM proposes, execution decides`.
-Phase 0 has no LLM yet — the template is hand-written — but the decision already
-comes from running the PoC, not from reading text.
+Every endpoint answers a triage question by running a PoC, never by comparing
+text: /triage (duplicate or bypass?), /scan (already fixed, and in which
+version?), /verify-fix (does this unreleased patch stop it?) and /triage/auto
+(search proposes a candidate, execution decides). `The LLM proposes, execution
+decides` — there is no LLM in the loop yet, PoCs are hand-written templates, but
+the decision already comes from execution.
+
+The API has no authentication and it drives the Docker daemon, so it is meant to
+listen on localhost only.
 """
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from . import catalog, config, db, ingest, policy, search, targets, verdict
 from .runner import ensure_patched_image, ensure_target_image, run_replay
 
+# Template, fix and product names become file paths, and versions become image
+# tags and build args, so the request may only use a safe alphabet for them: no
+# path separators, nothing the docker CLI could read as an option. A tool that
+# replays path-traversal PoCs should not be traversable itself.
+Name = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]{0,99}$")]
+Version = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
+Versions = Annotated[list[Version], Field(min_length=1, max_length=20)]
 
-def _disposition(policy_name: str | None, v: verdict.Verdict) -> dict:
-    """Resolve the policy and map the verdict to a disposition for the response."""
-    pol = policy.get(policy_name)
+
+def _contained(path: Path, root: Path) -> bool:
+    return path.resolve().is_relative_to(root.resolve())
+
+
+def _template_path(name: str) -> Path:
+    """Resolve a PoC template by name, or 404. The containment check backs up the
+    name pattern: the resolved file must live under the replays directory."""
+    path = config.REPLAYS_DIR / f"{name}.yaml"
+    if not _contained(path, config.REPLAYS_DIR) or not path.is_file():
+        raise HTTPException(404, f"template not found: {name}")
+    return path
+
+
+def _require_product(product: str) -> targets.TargetSpec:
+    if product not in targets.TARGETS:
+        raise HTTPException(404, f"unknown product: {product}")
+    return targets.TARGETS[product]
+
+
+def _require_policy(name: str) -> policy.Policy:
+    """An unknown policy is rejected, never replaced by the default: a typo in
+    "conservative" must not turn into a policy that auto-closes."""
+    try:
+        return policy.get(name)
+    except KeyError:
+        raise HTTPException(422, f"unknown policy: {name}") from None
+
+
+def _disposition(pol: policy.Policy, v: verdict.Verdict) -> dict:
+    """Map the verdict to a disposition under the policy, for the response."""
     d = policy.apply(pol, v)
     return {
         "policy": pol.name,
@@ -30,18 +71,19 @@ def _disposition(policy_name: str | None, v: verdict.Verdict) -> dict:
         "needs_human": d.needs_human,
     }
 
-app = FastAPI(title="FixProof", version="0.0.1")
-
-
-@app.on_event("startup")
-def _startup() -> None:
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
     db.init_schema()
+    yield
+
+
+app = FastAPI(title="FixProof", version="0.0.1", lifespan=_lifespan)
 
 
 class ReplayRequest(BaseModel):
-    product: str = "httpd"
-    template: str = "cve-2021-41773"
-    versions: list[str] = Field(default_factory=lambda: ["2.4.49", "2.4.50"])
+    product: Name = "httpd"
+    template: Name = "cve-2021-41773"
+    versions: Versions = Field(default_factory=lambda: ["2.4.49", "2.4.50"])
 
 
 @app.get("/health")
@@ -65,9 +107,8 @@ def policies() -> dict:
 
 @app.post("/replays/run")
 def replays_run(req: ReplayRequest) -> dict:
-    template_path = config.REPLAYS_DIR / f"{req.template}.yaml"
-    if not template_path.exists():
-        raise HTTPException(404, f"template not found: {req.template}")
+    template_path = _template_path(req.template)
+    _require_product(req.product)
 
     batch_id = str(uuid.uuid4())
     results = []
@@ -129,13 +170,13 @@ def search_candidates(req: SearchRequest) -> dict:
 
 
 class TriageRequest(BaseModel):
-    product: str = "httpd"
+    product: Name = "httpd"
     # the incoming report's PoC
-    new_template: str
+    new_template: Name
     # the earlier report we compare against, and its fix boundary
-    candidate_template: str
-    candidate_pre_fix: str   # last version before the candidate's fix (control)
-    candidate_fixed_in: str  # first version with the candidate's fix
+    candidate_template: Name
+    candidate_pre_fix: Version   # last version before the candidate's fix (control)
+    candidate_fixed_in: Version  # first version with the candidate's fix
     policy: str = policy.DEFAULT_POLICY  # receiver's counting rules
 
 
@@ -143,9 +184,9 @@ class TriageRequest(BaseModel):
 def triage(req: TriageRequest) -> dict:
     """Decide whether the new report is a duplicate of the candidate by running
     the new PoC before and after the candidate's fix."""
-    template_path = config.REPLAYS_DIR / f"{req.new_template}.yaml"
-    if not template_path.exists():
-        raise HTTPException(404, f"template not found: {req.new_template}")
+    template_path = _template_path(req.new_template)
+    _require_product(req.product)
+    pol = _require_policy(req.policy)
 
     pre = run_replay(req.product, req.candidate_pre_fix, template_path)
     post = run_replay(req.product, req.candidate_fixed_in, template_path)
@@ -171,25 +212,24 @@ def triage(req: TriageRequest) -> dict:
         "reason": v.reason,
         "new_report": req.new_template,
         "candidate": req.candidate_template,
-        "disposition": _disposition(req.policy, v),
+        "disposition": _disposition(pol, v),
         "evidence": evidence,
     }
 
 
 class ScanRequest(BaseModel):
-    product: str = "httpd"
-    template: str
+    product: Name = "httpd"
+    template: Name
     # versions, oldest -> newest
-    versions: list[str] = Field(default_factory=lambda: ["2.4.49", "2.4.50", "2.4.51"])
+    versions: Versions = Field(default_factory=lambda: ["2.4.49", "2.4.50", "2.4.51"])
 
 
 @app.post("/scan")
 def scan(req: ScanRequest) -> dict:
     """Run one PoC across a version ladder and report the fix boundary and whether
     the bug still reproduces on the newest version (the 'already fixed?' answer)."""
-    template_path = config.REPLAYS_DIR / f"{req.template}.yaml"
-    if not template_path.exists():
-        raise HTTPException(404, f"template not found: {req.template}")
+    template_path = _template_path(req.template)
+    _require_product(req.product)
 
     results = [run_replay(req.product, v, template_path) for v in req.versions]
     sr = verdict.scan_ladder(req.versions, results)
@@ -204,10 +244,10 @@ def scan(req: ScanRequest) -> dict:
 
 
 class VerifyFixRequest(BaseModel):
-    product: str = "vulnapp"
-    version: str = "1.0.0"   # the vulnerable build the PoC reproduces on
-    template: str            # the PoC that reproduces the bug
-    fix: str                 # named diff under targets/<product>/fixes/<fix>.patch
+    product: Name = "vulnapp"
+    version: Version = "1.0.0"  # the vulnerable build the PoC reproduces on
+    template: Name              # the PoC that reproduces the bug
+    fix: Name                   # named diff under targets/<product>/fixes/<fix>.patch
 
 
 @app.post("/verify-fix")
@@ -216,14 +256,12 @@ def verify_fix(req: VerifyFixRequest) -> dict:
     unpatched build (the control) and on the build with the fix diff applied on
     top. This verifies fixes that ship in no public version yet — the unreleased
     or internal patches an outside platform never sees."""
-    template_path = config.REPLAYS_DIR / f"{req.template}.yaml"
-    if not template_path.exists():
-        raise HTTPException(404, f"template not found: {req.template}")
+    template_path = _template_path(req.template)
+    spec = _require_product(req.product)
     patch_path = Path(targets.fix_path(req.product, req.fix))
-    if not patch_path.exists():
+    if not _contained(patch_path, config.TARGETS_DIR) or not patch_path.is_file():
         raise HTTPException(404, f"fix not found: {req.fix}")
 
-    spec = targets.spec(req.product)
     base_image = ensure_target_image(spec, req.version)
     patched_image = ensure_patched_image(spec, base_image, patch_path)
 
@@ -246,8 +284,8 @@ def verify_fix(req: VerifyFixRequest) -> dict:
 class AutoTriageRequest(BaseModel):
     # the incoming report
     text: str                 # the report prose, used to search for candidates
-    new_template: str         # the incoming report's replayable PoC
-    product: str | None = None  # if omitted, taken from the chosen candidate
+    new_template: Name        # the incoming report's replayable PoC
+    product: Name | None = None  # if omitted, taken from the chosen candidate
     policy: str = policy.DEFAULT_POLICY  # receiver's counting rules
 
 
@@ -255,9 +293,10 @@ class AutoTriageRequest(BaseModel):
 def triage_auto(req: AutoTriageRequest) -> dict:
     """The full loop: search proposes a candidate from the report text, then the
     engine runs the incoming PoC before and after that candidate's fix to decide."""
-    template_path = config.REPLAYS_DIR / f"{req.new_template}.yaml"
-    if not template_path.exists():
-        raise HTTPException(404, f"template not found: {req.new_template}")
+    template_path = _template_path(req.new_template)
+    if req.product is not None:
+        _require_product(req.product)
+    pol = _require_policy(req.policy)
 
     with db.connect() as conn:
         ranked = search.candidates(conn, req.text, limit=5)
@@ -271,7 +310,7 @@ def triage_auto(req: AutoTriageRequest) -> dict:
         nv = verdict.decide_no_candidate(None)
         return {"verdict": nv.label,
                 "reason": nv.reason,
-                "disposition": _disposition(req.policy, nv),
+                "disposition": _disposition(pol, nv),
                 "candidates": ranked}
 
     run = catalog.get(chosen["external_id"])
@@ -297,7 +336,7 @@ def triage_auto(req: AutoTriageRequest) -> dict:
         "chosen_candidate": chosen["external_id"],
         "candidate_score": chosen["score"],
         "new_report": req.new_template,
-        "disposition": _disposition(req.policy, v),
+        "disposition": _disposition(pol, v),
         "evidence": evidence,
         "all_candidates": [c["external_id"] for c in ranked],
     }

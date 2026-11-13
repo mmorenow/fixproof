@@ -14,9 +14,14 @@ def _v(label: str) -> verdict.Verdict:
 
 # --- resolving presets ---------------------------------------------------------
 
-def test_get_falls_back_to_default():
+def test_get_none_is_the_default():
     assert policy.get(None).name == policy.DEFAULT_POLICY
-    assert policy.get("does-not-exist").name == policy.DEFAULT_POLICY
+
+
+def test_get_unknown_preset_raises_instead_of_falling_back():
+    # A typo in "conservative" must not silently become the auto-closing default.
+    with pytest.raises(KeyError):
+        policy.get("conservativ")
 
 
 def test_get_known_preset():

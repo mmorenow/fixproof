@@ -3,9 +3,8 @@ isolated container, and report whether the state oracle matched.
 
 Everything runs via the `docker` CLI as a subprocess so the steps are transparent
 and easy to audit. Targets and the nuclei runner share an `--internal` Docker
-network, so neither can reach the internet while a reporter-supplied PoC runs.
-Stronger sandboxing (gVisor, cap-drop) comes in Phase 2; the no-egress network is
-the guardrail that matters now.
+network, so neither can reach the internet while a reporter-supplied PoC runs, and
+every container starts from the hardened baseline in `_hardening_flags`.
 """
 from __future__ import annotations
 
@@ -26,12 +25,18 @@ class DockerError(RuntimeError):
 
 
 def _docker(*args: str, timeout: int = 120, check: bool = True) -> subprocess.CompletedProcess:
-    proc = subprocess.run(
-        ["docker", *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        proc = subprocess.run(
+            ["docker", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # A hung docker call is an environment failure, not evidence either way.
+        # Raising DockerError turns it into an `error` outcome (the verdict engine
+        # abstains) instead of an unhandled exception.
+        raise DockerError(f"docker {args[0]} timed out after {timeout}s") from exc
     if check and proc.returncode != 0:
         raise DockerError(f"docker {' '.join(args)} failed: {proc.stderr.strip()}")
     return proc
@@ -155,16 +160,20 @@ def _wait_ready(target: str, port: int) -> bool:
     while time.monotonic() < deadline:
         # Require a real HTTP response (exit 0). busybox wget follows redirects, so
         # a login redirect still counts as "up"; a connection refusal does not.
-        proc = _docker(
-            "run", "--rm", "--network", config.RUN_NETWORK,
-            *_hardening_flags(),
-            config.READINESS_IMAGE,
-            "wget", "-q", "-T", "3", "-O", "/dev/null", f"http://{target}:{port}/",
-            check=False, timeout=15,
-        )
-        if proc.returncode == 0:
-            return True
-        last = proc.stderr.strip()
+        try:
+            proc = _docker(
+                "run", "--rm", "--network", config.RUN_NETWORK,
+                *_hardening_flags(),
+                config.READINESS_IMAGE,
+                "wget", "-q", "-T", "3", "-O", "/dev/null", f"http://{target}:{port}/",
+                check=False, timeout=15,
+            )
+        except DockerError as exc:  # a slow probe is just another failed attempt
+            last = str(exc)
+        else:
+            if proc.returncode == 0:
+                return True
+            last = proc.stderr.strip()
         time.sleep(2)
     raise DockerError(f"target {target}:{port} not ready within timeout: {last}")
 
@@ -187,6 +196,7 @@ def run_replay(product: str, version: str, template_path: Path,
 
     run_id = uuid.uuid4().hex[:12]
     target = f"fixproof-target-{run_id}"
+    poc_runner = f"fixproof-nuclei-{run_id}"
     started = time.monotonic()
 
     mount_args: list[str] = []
@@ -223,7 +233,7 @@ def run_replay(product: str, version: str, template_path: Path,
             (out / "template.yaml").chmod(0o666)
 
             proc = _docker(
-                "run", "--rm", "--network", config.RUN_NETWORK,
+                "run", "--rm", "--name", poc_runner, "--network", config.RUN_NETWORK,
                 *_hardening_flags(),
                 "-v", f"{out}:/out",
                 config.NUCLEI_IMAGE,
@@ -247,7 +257,13 @@ def run_replay(product: str, version: str, template_path: Path,
             duration_ms=int((time.monotonic() - started) * 1000),
         )
     finally:
-        _docker("rm", "-f", target, check=False)
+        # The PoC runner is --rm, but if its docker call timed out the container is
+        # still alive: remove it by name too so a hung PoC never outlives the run.
+        for name in (target, poc_runner):
+            try:
+                _docker("rm", "-f", name, check=False)
+            except DockerError:
+                pass
 
     return ReplayResult(
         outcome="pass" if matched else "fail",
