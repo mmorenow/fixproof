@@ -1,6 +1,8 @@
-# FixProof — Phases 0–2
+# FixProof — usage
 
-The execution core, the triage verdict, and the full verdict + policy engine.
+Every endpoint, with copy-paste examples. For the what and why, start at the
+[project README](../README.md).
+
 FixProof stands up a target at several versions, replays a PoC against each on an
 egress-less Docker network, and decides — by running the PoC, not by comparing text
 — whether a new report is a duplicate, a bypass, a regression, already fixed, or
@@ -167,8 +169,13 @@ curl -s -X POST localhost:8099/scan -H 'content-type: application/json' \
 ## Test
 
 ```bash
-uv run pytest -s
+uv run pytest tests/test_verdict.py tests/test_policy.py tests/test_api.py   # pure: no Docker, under a second
+uv run pytest -s                                                             # everything, including real-CVE replays (Docker + Postgres)
 ```
+
+The pure tests cover the verdict rules, the policy invariants and the API's input
+handling. The Docker tests replay each PoC against the real product versions and
+assert the outcome the vendor advisory says it should have.
 
 ## Layout
 
@@ -189,7 +196,7 @@ targets/
   httpd-cve-2021-41773/httpd.conf   deliberately vulnerable Apache config
   mlflow/                           build-local target (no official image)
   vulnapp/                          the patch-on-top demo app + fixes/*.patch (unreleased fix)
-tests/         test_verdict.py, test_policy.py (pure); test_smoke.py, test_patch_on_top.py (Docker)
+tests/         test_verdict.py, test_policy.py, test_api.py (pure); test_smoke.py, test_patch_on_top.py (Docker)
 ```
 
 ## Isolation (the PoC is the untrusted input)
@@ -209,6 +216,19 @@ locked down (`app/runner.py:_hardening_flags`):
 - **gVisor, optional.** Set `FIXPROOF_RUNTIME=runsc` to run every container under
   gVisor where it is installed. Left unset it uses Docker's default runtime, so
   the sandbox works everywhere and gVisor is a drop-in upgrade, not a dependency.
+
+### The API itself
+
+- **Localhost only, no authentication.** The API drives the Docker daemon, which is
+  root-equivalent on the host. Run it on `127.0.0.1` (uvicorn's default) and do not
+  expose it.
+- **Request names are not paths.** Template, fix and product names and version
+  strings are restricted to a safe alphabet and resolved inside `replays/` and
+  `targets/` only (`tests/test_api.py`), so a request cannot read another file or
+  pass an option to the docker CLI.
+- **Fail closed.** An unknown policy name is rejected, never replaced by the
+  default, and a hung container becomes an `error` outcome (the verdict engine
+  abstains) rather than a guess.
 
 ## Notes
 
