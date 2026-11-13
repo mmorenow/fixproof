@@ -9,61 +9,11 @@
 ![sandbox](https://img.shields.io/badge/sandbox-no%20egress%20%C2%B7%20cap--drop%20ALL-0a0a0a)
 ![license](https://img.shields.io/badge/license-MIT-2ea44f)
 
-<img src="docs/assets/demo.gif" alt="FixProof replays a PoC before and after another report's fix and returns BYPASS" width="860">
-
 </div>
 
-## The gap
-
-Two reports are the same bug if one fix fixes both. Dedup tools compare text,
-embeddings and endpoint fingerprints. None of them test the fix.
-
-FixProof does. It replays the new report's PoC on the version right before the
-earlier report's fix and on the version right after it, inside a locked-down sandbox:
-
-```text
-  the new report's PoC...
-  before the fix        after the fix         verdict
-  ──────────────────────────────────────────────────────────
-  reproduces       →    stopped               DUPLICATE
-  reproduces       →    still works           BYPASS
-  never worked                                NOT_REPRODUCED
-  a run errored                               ABSTAIN
-```
-
-The run before the fix is the control: it proves the PoC works. A report whose PoC
-never reproduces gets a request for evidence, not a verdict.
-
-## See it decide
-
-CVE-2021-41773 was fixed in httpd 2.4.50. CVE-2021-42013 reads the same file with a
-nearly identical request. Is it a duplicate?
-
-```console
-$ curl -s localhost:8099/triage --json @examples/triage-bypass.json \
-    | jq '{verdict, reason, action: .disposition.action}'
-{
-  "verdict": "BYPASS",
-  "reason": "the new PoC still works with the candidate's fix applied",
-  "action": "KEEP_OPEN"
-}
-```
-
-It survived the patch. So where was it actually fixed?
-
-```console
-$ curl -s localhost:8099/scan --json @examples/scan-ladder.json \
-    | jq -c '{status, last_vulnerable, fixed_in}'
-{"status":"ALREADY_FIXED","last_vulnerable":"2.4.50","fixed_in":"2.4.51"}
-```
-
-And a private app with no CVE and no public image, fixed only by a patch nobody has
-released yet. Does the patch work?
-
-```console
-$ curl -s localhost:8099/verify-fix --json @examples/verify-fix.json | jq -c '{verdict, reason}'
-{"verdict":"FIX_CONFIRMED","reason":"the patch stops the PoC"}
-```
+FixProof compares a report's replay results before and after a fix. The
+pre-fix run is the control. FixProof requests a working proof of concept when
+the report does not reproduce and abstains when a run errors.
 
 ## What it answers
 
@@ -78,26 +28,6 @@ A verdict says what the execution means. What to *do* about it is a separate,
 declarative policy (`default`, `conservative`, `cna`), with two invariants no preset
 can override: a bypass or regression is never closed as a duplicate, and a report with
 no reproducible evidence never changes state on its own.
-
-## Validated on real CVEs
-
-Each row is a real product at real versions, stood up in the sandbox. FixProof is
-given the version ladder, not the answer, and has to find the boundary by execution.
-The result is then compared with the vendor advisory.
-
-| Product | CVE | Class | Advisory says | FixProof found |
-|---|---|---|---|---|
-| Apache httpd | CVE-2021-41773 | URL path traversal | fixed in 2.4.50 | `ALREADY_FIXED`, `fixed_in=2.4.50` |
-| Apache httpd | CVE-2021-42013 | bypass of that fix | distinct bug, fixed in 2.4.51 | `BYPASS` at 2.4.50, `fixed_in=2.4.51` |
-| Grafana | CVE-2021-43798 | plugin path traversal | fixed in 8.3.1 | `ALREADY_FIXED`, `fixed_in=8.3.1` |
-| MLflow | CVE-2023-1177 | model-registry file read | fixed in 2.2.1 | `ALREADY_FIXED`, `fixed_in=2.2.1` |
-| Apache Flink | CVE-2020-17519 | REST path traversal | fixed in 1.11.3 | `ALREADY_FIXED`, `fixed_in=1.11.3` |
-| private app | none (unreleased patch) | path traversal | the patch closes it | `FIX_CONFIRMED` |
-
-Every oracle is a state change, never a status code: the PoC passes only if the
-response body is the real `/etc/passwd` or a canary planted outside the web root. A
-patched server that still answers `200` reads as fixed. The full write-up, including
-what this does *not* prove yet, is in [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
 ## Threat model: the PoC is hostile input
 
@@ -152,56 +82,24 @@ Every endpoint with examples: [`fixproof/README.md`](fixproof/README.md).
 
 ## Adding a product
 
-No engine changes. One target spec and one PoC template:
-
-```python
-# fixproof/app/targets.py
-"grafana": TargetSpec(image_repo="grafana/grafana", port=3000),
-```
-
-```yaml
-# fixproof/replays/cve-2021-43798.yaml  (a Nuclei template; the matcher is the oracle)
-matchers:
-  - type: regex
-    part: body
-    regex: ["root:.*:0:0:"]
-```
-
-Products without an official image are built from a Dockerfile at the requested
-version (MLflow), and private apps are built from source with the fix applied as a
-diff on top (`targets/vulnapp`).
+Add a target spec in [`fixproof/app/targets.py`](fixproof/app/targets.py) and a
+Nuclei template in [`fixproof/replays/`](fixproof/replays/). Targets can use an
+existing container image or build one from a local Dockerfile.
 
 ## Limits
 
-- **Release-level differential.** `/triage` compares two released versions, so
-  `DUPLICATE` means "something that shipped between them stops this PoC". When a
-  release bundles several fixes, that is weaker than "the same fix". Patch-on-top
-  isolates a single diff, but today it is wired to `/verify-fix` only.
-- **`BYPASS` means "not covered by the candidate's fix".** That is a true bypass or an
-  unrelated bug the search proposed by mistake. Either way it stays open; telling the
-  two apart still takes a human.
-- **One run per version.** A negative is "the oracle did not match", once. Repeated
-  runs with a majority vote are designed, not built.
-- **One vulnerability class.** Every PoC here is a file read. IDOR, auth bypass, SQLi
-  and SSRF oracles are designed in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), not
-  wired.
-- **PoCs are hand-written Nuclei templates.** The step that turns a prose report into
-  a replayable PoC is the next phase, along with intake from GitHub private
-  vulnerability reports and email.
-
-## Who it is for
-
-Teams that receive security findings without big-platform tooling: open-source
-maintainers, small PSIRTs, internal AppSec teams, and pentesters running retests.
-Self-hosted and vendor-agnostic.
+- `/triage` compares release versions. If a release bundles several changes,
+  the result shows whether the release stops the PoC. Use `/verify-fix` to test
+  a specific patch.
+- A `BYPASS` verdict means the PoC still reproduces with the candidate's fix in
+  place. Review the evidence to determine how the reports are related.
+- Each replay runs once per version. The bundled templates cover file reads.
+- Replay requires an existing Nuclei template.
 
 ## Repo layout
 
 ```text
 fixproof/               the tool: engine, API, target specs, PoC templates, tests
-docs/ARCHITECTURE.md    the full pipeline, data model and roadmap
-docs/VALIDATION.md      the validation run against vendor advisories
-docs/research/          background: industry practice, academic work, practitioner pain
 ```
 
 ## License

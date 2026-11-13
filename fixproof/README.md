@@ -9,10 +9,8 @@ egress-less Docker network, and decides — by running the PoC, not by comparing
 simply not reproducible. It can also verify an **unreleased fix** by applying the
 patch on top of a built image (patch-on-top).
 
-> In 2026, bug-bounty programs (Google OSS VRP, curl, CycloneDX) buckled under
-> AI-generated reports that read well but run nothing. FixProof's answer: a report
-> with no reproducible evidence gets `NOT_REPRODUCED` and a request for a PoC, never
-> a verdict. The LLM proposes; execution decides.
+A report with no reproducible evidence gets `NOT_REPRODUCED` and a request for a
+working PoC.
 
 ## Requires
 
@@ -139,7 +137,7 @@ Two safety invariants hold under **every** preset: a `BYPASS`/`REGRESSION` is ne
 closed as a duplicate, and a report with no reproducible evidence never triggers a
 state change — the gate against AI-generated noise.
 
-## Not Apache-specific
+## Supported targets
 
 A second real product, Grafana (CVE-2021-43798), runs through the same engine with
 only a target spec (`app/targets.py`) and a template added — no code changes:

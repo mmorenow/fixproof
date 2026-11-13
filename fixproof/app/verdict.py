@@ -1,19 +1,13 @@
 """The verdict engine: what does running the PoC prove?
 
-Four questions every incoming report must answer (docs/ARCHITECTURE.md §1):
+Questions the verdict engine answers:
 
   1. Is it real?            -> does the PoC reproduce at all? (the control)
   2. Is it a duplicate?     -> does an earlier report's fix also stop this PoC?
   3. Is it already fixed?   -> does it still reproduce on the latest version?
   4. Bypass or regression?  -> does it survive a fix, or come back after one?
 
-None of these is answered by comparing text. Each is a deterministic rule applied
-to the outcome of *running* the PoC. That distinction matters more in 2026 than when
-the idea started: bug-bounty programs (Google's OSS VRP, curl, CycloneDX) were
-flooded with AI-generated reports that read as credible but carry no reproducible
-evidence, and several paused or closed intake. FixProof's answer is to make
-reproducible evidence the only thing that decides. The LLM proposes; execution
-decides, and when nothing reproduces the engine says so instead of guessing.
+Each verdict follows a deterministic rule based on the recorded replay outcomes.
 
 To decide whether a new report N duplicates an earlier report O, we run N's PoC on
 the version *before* O's fix and on the version *with* O's fix. Running N on the
@@ -53,9 +47,7 @@ def decide(pre_fix: ReplayResult, post_fix: ReplayResult) -> Verdict:
         return Verdict(ABSTAIN, "a replay errored; cannot decide")
 
     if pre_fix.outcome != "pass":
-        # The PoC didn't even reproduce on the vulnerable version, so the control
-        # failed and nothing downstream can be trusted. This is the AI-slop gate:
-        # a report with no runnable evidence gets no verdict, it gets a request.
+        # The pre-fix replay must reproduce before the post-fix result can be used.
         return Verdict(NOT_REPRODUCED, "the new PoC did not reproduce on the pre-fix version")
 
     if post_fix.outcome == "fail":
@@ -151,9 +143,7 @@ def scan_ladder(versions: list[str], results: list[ReplayResult]) -> ScanResult:
             fixed_in = v
             break
 
-    # A regression is a pass that comes after that fix boundary: it was fixed, then
-    # it worked again. (Apache's 41773/42013 is an incomplete fix; PHP's 2026
-    # php2shell patches shipped with a noted regression — both are this shape.)
+    # A pass after the fix boundary indicates a regression.
     regressed_in: str | None = None
     if fixed_in is not None:
         after_fix = False

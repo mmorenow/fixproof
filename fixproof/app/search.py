@@ -3,10 +3,8 @@ a new report might duplicate. It never decides — it only narrows the field so 
 execution engine (triage) runs the fix-differential against a handful of candidates
 instead of the whole history.
 
-Score = full-text rank (ts_rank) blended with trigram similarity. Full-text catches
-shared terms; trigram catches fuzzy overlap the stemmer misses. Embeddings/pgvector
-are the richer next step; this lexical pass is the honest baseline the GitLab
-pgvector experiment found "good for similar, not for duplicate".
+The score combines full-text rank (ts_rank) with trigram similarity. Full-text
+rank captures shared terms, and trigrams capture approximate matches.
 """
 from __future__ import annotations
 

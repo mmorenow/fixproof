@@ -15,9 +15,7 @@ means the counting rules are one readable place, and two safety invariants hold 
 *every* preset because they are correctness properties, not preferences:
 
   * BYPASS and REGRESSION are never closed as duplicates — they are distinct bugs.
-  * NOT_REPRODUCED and NEEDS_INFO never auto-close or auto-open anything — no
-    reproducible evidence, no action. This is the gate against the 2026 wave of
-    AI-generated reports that read well but run nothing.
+  * NOT_REPRODUCED and NEEDS_INFO request evidence before any automatic action.
 """
 from __future__ import annotations
 

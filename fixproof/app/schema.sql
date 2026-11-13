@@ -1,5 +1,4 @@
--- FixProof schema (a trimmed subset of docs/ARCHITECTURE.md section 8): the
--- tables the execution core, the candidate search and the triage verdict use.
+-- Tables used by replay, candidate search and triage.
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
